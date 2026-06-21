@@ -6,6 +6,9 @@ from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_community.vectorstores import FAISS
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.runnables import RunnableParallel, RunnableLambda, RunnablePassthrough
+from langchain_community.retrievers import BM25Retriever
+from langchain_classic.retrievers import EnsembleRetriever
+from langchain_core.documents import Document
 
 # Load environment variables (Ensure HUGGINGFACEHUB_API_TOKEN is set in .env)
 load_dotenv()
@@ -27,7 +30,7 @@ def initialize_models():
     
     return chat_model, embeddings
 
-def fetch_and_chunk_transcript(vid_id: str, chunk_size: int = 1000, chunk_overlap: int = 200):
+def fetch_and_chunk_transcript(vid_id: str, chunk_size: int = 500, chunk_overlap: int = 100):
     """Fetches the YouTube transcript and splits it into manageable text chunks."""
     print(f"[*] Fetching transcript for video ID: {vid_id}...")
     try:
@@ -52,15 +55,24 @@ def main():
     # 1. Configuration & Setup
     # ---------------------------------------------------------
     vid_id = "DsewHeVbL-0"
-    user_query = "What is AGI and how does it work?"
+    user_query = "What is AGI?"
     strparser = StrOutputParser()
     
     model, embeddings = initialize_models()
     chunks = fetch_and_chunk_transcript(vid_id)
     
-    print("[*] Indexing vectors into FAISS...")
-    vectorstore = FAISS.from_texts(chunks, embeddings)
-    retriever = vectorstore.as_retriever(search_kwargs={"k": 4})
+    docs = [Document(page_content=chunk) for chunk in chunks]
+
+    vectorstore = FAISS.from_documents(docs, embeddings)
+    faiss_retriever = vectorstore.as_retriever(search_kwargs={"k": 6})
+
+    bm25_retriever = BM25Retriever.from_documents(docs)
+    bm25_retriever.k = 6
+
+    ensemble_retriever = EnsembleRetriever(
+        retrievers=[bm25_retriever, faiss_retriever],
+        weights=[0.5, 0.5]
+    )
 
     # ---------------------------------------------------------
     # 2. Defining the LCEL Chains
@@ -79,7 +91,7 @@ def main():
     optimized_query_chain = prompt_to_generate_correct_query | model | strparser
 
     # Chain B: Document Retrieval
-    retrieval_chain = retriever | RunnableLambda(format_docs)
+    retrieval_chain = ensemble_retriever | RunnableLambda(format_docs)
 
     # Chain C: Parallel Orchestrator
     # This automatically passes the optimized query into both the prompt's 'question' slot 
